@@ -50,6 +50,12 @@
     ['bizum', 'Bizum', 'auto'],
   ];
 
+  /** Texto corto para mostrar: el detalle, salvo que sea solo una referencia. */
+  const titulo = (r) => {
+    const d = r.detalle || '';
+    return !d || /^(?:n\s)?\d{8,}|^(?:cuenta|tarjeta|iban) \*|^c[aà]rrec n[uú]m/i.test(d) ? r.concepto || d : d;
+  };
+
   const norm = (s) =>
     String(s == null ? '' : s)
       .normalize('NFD')
@@ -61,7 +67,7 @@
   // Nada de números de tarjeta o cuenta completos en la hoja: solo los 4 últimos.
   function maskSensitive(s) {
     return s
-      .replace(/\b\d{12}(\d{4})\b(?:\s\d{8}\s\d{3})?/g, (_, l4) => 'tarjeta *' + l4)
+      .replace(/\b[3-6]\d{11}(\d{4})\b(?:\s\d{8}\s\d{3})?/g, (_, l4) => 'tarjeta *' + l4)
       .replace(/\b\d{4}-\d{4}-\d{2}-\d{6}(\d{4})\b/g, (_, l4) => 'cuenta *' + l4)
       .replace(/\bES\d{2}(?:\s?\d{4}){4}\s?\d{2}(\d{2})\b/gi, (_, l2) => 'IBAN *' + l2);
   }
@@ -192,7 +198,7 @@
 
   /** Patrón sugerido para crear una regla a partir de un movimiento. */
   function suggestPattern(m) {
-    const base = norm(m.detalle || m.concepto).split(/[\d*+]/)[0].replace(/[^a-z' ]+$/g, '').trim();
+    const base = norm(titulo(m)).split(/[\d*+]/)[0].replace(/[^a-z' ]+$/g, '').trim();
     return base.length >= 3 ? base : '';
   }
 
@@ -233,24 +239,101 @@
   }
 
   // ---------- Resumen ----------
-  function summarize(rows, mes) {
+  const r2 = (x) => Math.round(x * 100) / 100;
+  const inPer = (fecha, per) => per === 'all' || String(fecha).startsWith(per);
+
+  /** per: 'all' | 'YYYY' | 'YYYY-MM' */
+  function summarize(rows, per) {
     const meses = new Map();
     const cat = { gasto: new Map(), ingreso: new Map() };
+    const periodo = { ingresos: 0, gastos: 0, n: 0 };
+    const gastosRows = [];
     for (const r of rows) {
       if (r.tipo !== 'gasto' && r.tipo !== 'ingreso') continue;
-      const m = r.fecha.slice(0, 7);
+      const m = String(r.fecha).slice(0, 7);
       if (!meses.has(m)) meses.set(m, { mes: m, ingresos: 0, gastos: 0 });
       const o = meses.get(m);
       if (r.tipo === 'ingreso') o.ingresos += r.importe; else o.gastos += -r.importe; // reembolsos restan
-      if (m === mes) cat[r.tipo].set(r.categoria, (cat[r.tipo].get(r.categoria) || 0) + (r.tipo === 'ingreso' ? r.importe : -r.importe));
+      if (inPer(r.fecha, per)) {
+        const v = r.tipo === 'ingreso' ? r.importe : -r.importe;
+        cat[r.tipo].set(r.categoria, (cat[r.tipo].get(r.categoria) || 0) + v);
+        if (r.tipo === 'ingreso') periodo.ingresos += v; else periodo.gastos += v;
+        periodo.n++;
+        if (r.tipo === 'gasto' && r.importe < 0) gastosRows.push(r);
+      }
     }
-    const lista = [...meses.values()].sort((a, b) => b.mes.localeCompare(a.mes)).map((o) => ({ ...o, neto: o.ingresos - o.gastos }));
-    const top = (m) => [...m].map(([categoria, total]) => ({ categoria, total })).sort((a, b) => b.total - a.total);
-    return { meses: lista, gastos: top(cat.gasto), ingresos: top(cat.ingreso) };
+    periodo.ingresos = r2(periodo.ingresos); periodo.gastos = r2(periodo.gastos);
+    periodo.neto = r2(periodo.ingresos - periodo.gastos);
+    periodo.ahorro = periodo.ingresos > 0 ? periodo.neto / periodo.ingresos : null;
+    const lista = [...meses.values()].sort((a, b) => b.mes.localeCompare(a.mes))
+      .map((o) => ({ mes: o.mes, ingresos: r2(o.ingresos), gastos: r2(o.gastos), neto: r2(o.ingresos - o.gastos) }));
+    const top = (m) => [...m].map(([categoria, total]) => ({ categoria, total: r2(total) })).filter((x) => x.total > 0).sort((a, b) => b.total - a.total);
+    return {
+      meses: lista, periodo, gastos: top(cat.gasto), ingresos: top(cat.ingreso),
+      top: gastosRows.sort((a, b) => a.importe - b.importe).slice(0, 5),
+    };
+  }
+
+  /** Gastos que se repiten: misma categoría e importe exacto en >=3 meses distintos y aún activos. */
+  function recurrentes(rows) {
+    const grupos = new Map();
+    let ultimoMes = '';
+    for (const r of rows) {
+      const m = String(r.fecha).slice(0, 7);
+      if (m > ultimoMes) ultimoMes = m;
+      if (r.tipo !== 'gasto' || r.importe >= 0) continue;
+      const k = r.categoria + '|' + Math.round(-r.importe * 100);
+      if (!grupos.has(k)) grupos.set(k, { categoria: r.categoria, importe: -r.importe, meses: new Set(), textos: new Map() });
+      const g = grupos.get(k);
+      g.meses.add(m);
+      const t = titulo(r);
+      g.textos.set(t, (g.textos.get(t) || 0) + 1);
+    }
+    if (!ultimoMes) return [];
+    const [y, mm] = ultimoMes.split('-').map(Number);
+    const limite = new Date(Date.UTC(y, mm - 2, 1)).toISOString().slice(0, 7); // activo: visto el último mes o el anterior
+    return [...grupos.values()]
+      .filter((g) => g.meses.size >= 3 && [...g.meses].some((m) => m >= limite))
+      .map((g) => ({
+        nombre: g.textos.size === 1 && !/\*\d/.test([...g.textos.keys()][0]) ? [...g.textos.keys()][0] : g.categoria,
+        categoria: g.categoria, importe: r2(g.importe), meses: g.meses.size,
+      }))
+      .sort((a, b) => b.importe - a.importe);
+  }
+
+  /** Frases con lo más llamativo del periodo. fmt formatea euros. */
+  function notas(rows, per, fmt) {
+    const out = [];
+    const s = summarize(rows, per), p = s.periodo;
+    if (!p.n) return out;
+    if (/^\d{4}-\d{2}$/.test(per)) {
+      const [y, m] = per.split('-').map(Number);
+      const prev = new Date(Date.UTC(y, m - 2, 1)).toISOString().slice(0, 7);
+      const pm = s.meses.find((x) => x.mes === prev);
+      if (pm && pm.gastos > 0 && p.gastos > 0) {
+        const d = ((p.gastos - pm.gastos) / pm.gastos) * 100;
+        out.push(`Gastas ${fmt(p.gastos)}, un ${Math.abs(Math.round(d))}% ${d >= 0 ? 'más' : 'menos'} que el mes anterior (${fmt(pm.gastos)}).`);
+      }
+    }
+    if (s.gastos.length && p.gastos > 0) {
+      const g = s.gastos[0];
+      out.push(`Tu mayor gasto es «${g.categoria}»: ${fmt(g.total)}, el ${Math.round((g.total / p.gastos) * 100)}% del total.`);
+    }
+    if (s.top.length) {
+      const t = s.top[0], f = String(t.fecha);
+      out.push(`El movimiento más grande: ${titulo(t)} (${fmt(-t.importe)}, ${f.slice(8)}/${f.slice(5, 7)}).`);
+    }
+    const rec = recurrentes(rows);
+    if (rec.length) out.push(`Gastos fijos que se repiten cada mes: unos ${fmt(rec.reduce((a, x) => a + x.importe, 0))} (${rec.length} conceptos).`);
+    if (p.ingresos === 0 && p.gastos > 0) out.push('No hay ingresos registrados en este periodo: puede que falte importar alguna cuenta.');
+    else if (p.neto < 0) out.push('Los gastos superan a los ingresos registrados.');
+    const sin = rows.filter((r) => r.categoria === SIN_CAT && inPer(r.fecha, per)).length;
+    if (sin) out.push(`${sin} movimiento${sin > 1 ? 's' : ''} sin categoría en este periodo.`);
+    return out;
   }
 
   // ---------- Hoja <-> objetos ----------
-  const COLS = ['id', 'fecha', 'cuenta', 'concepto', 'detalle', 'importe', 'saldo', 'categoria', 'tipo', 'pareja'];
+  const COLS = ['id', 'fecha', 'cuenta', 'concepto', 'detalle', 'importe', 'saldo', 'categoria', 'tipo', 'pareja', 'nota'];
   const toRow = (m) => COLS.map((c) => (m[c] == null ? '' : m[c]));
   function fromRow(arr, rowNumber) {
     const o = { fila: rowNumber };
@@ -263,6 +346,6 @@
   return {
     SIN_CAT, INTERNA, CUENTAS, REGLAS_INICIALES, COLS,
     norm, parseBBVA, assignIds, suggestAccount, classify, suggestPattern,
-    pairInternal, summarize, toRow, fromRow, contentKey,
+    pairInternal, summarize, recurrentes, notas, titulo, toRow, fromRow, contentKey,
   };
 });

@@ -91,8 +91,9 @@
   }
 
   async function load() {
-    const g = await api(`${SH}${S.sheetId}/values:batchGet?ranges=Movimientos!A2:J&ranges=Reglas!A2:C&ranges=Cuentas!A2:B&valueRenderOption=UNFORMATTED_VALUE`);
-    const [mov, reg, cue] = g.valueRanges.map((v) => v.values || []);
+    const g = await api(`${SH}${S.sheetId}/values:batchGet?ranges=Movimientos!A2:K&ranges=Reglas!A2:C&ranges=Cuentas!A2:B&ranges=Movimientos!K1&valueRenderOption=UNFORMATTED_VALUE`);
+    const [mov, reg, cue, hdr] = g.valueRanges.map((v) => v.values || []);
+    if (!hdr.length) await post(`${SH}${S.sheetId}/values:batchUpdate`, { valueInputOption: 'RAW', data: [{ range: 'Movimientos!K1', values: [['nota']] }] });
     S.rows = mov.map((r, i) => C.fromRow(r, i + 2)).filter((r) => r.id);
     S.reglas = reg.filter((r) => r[0]).map((r) => ({ patron: String(r[0]), categoria: r[1] || C.SIN_CAT, tipo: r[2] || 'auto' }));
     S.cuentas = Object.fromEntries(C.CUENTAS.map((c) => [c.key, c.nombre]));
@@ -124,21 +125,88 @@
   const sinCat = () => S.rows.filter((r) => r.categoria === C.SIN_CAT);
 
   // ---------- Resumen ----------
-  function renderResumen() {
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  function svg(tag, attrs, ...kids) {
+    const e = document.createElementNS(SVGNS, tag);
+    for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
+    for (const k of kids.flat()) if (k != null) e.append(k.nodeType ? k : document.createTextNode(k));
+    return e;
+  }
+  const corto = (n) => (n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1).replace('.0', '') + 'k' : String(Math.round(n)));
+  const mesCorto = (m) => new Date(m + '-15').toLocaleDateString('es-ES', { month: 'short' }).replace('.', '');
+  const perLabel = (p) => (p === 'all' ? 'Todo el histórico' : p.length === 4 ? 'Año ' + p : mesLabel(p));
+
+  function periodos() {
     const meses = mesesDisponibles();
+    const años = [...new Set(meses.map((m) => m.slice(0, 4)))];
+    return [...meses, ...años, 'all'];
+  }
+
+  function chartMeses(lista, sel, onPick) {
+    const datos = lista.slice(0, 12).reverse(); // cronológico
+    if (!datos.length) return el('p', { class: 'sub' }, 'Importa algún fichero para ver el gráfico.');
+    const W = 720, H = 240, L = 40, T = 12, B = 28, R = 8;
+    const max = Math.max(1, ...datos.flatMap((d) => [d.ingresos, d.gastos]));
+    const p10 = Math.pow(10, Math.floor(Math.log10(max)));
+    const techo = [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].map((k) => k * p10).find((v) => v >= max);
+    const y = (v) => T + (H - T - B) * (1 - v / techo);
+    const bw = (W - L - R) / datos.length;
+    const g = svg('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Ingresos y gastos por mes' });
+    for (let i = 0; i <= 4; i++) {
+      const v = (techo / 4) * i;
+      g.append(svg('line', { class: 'gl', x1: L, x2: W - R, y1: y(v), y2: y(v) }), svg('text', { class: 'ax', x: L - 6, y: y(v) + 4, 'text-anchor': 'end' }, corto(v)));
+    }
+    datos.forEach((d, i) => {
+      const x = L + i * bw, w = Math.min(14, bw * 0.34);
+      if (d.mes === sel) g.append(svg('rect', { class: 'sel', x, y: T, width: bw, height: H - T - B, rx: 4 }));
+      g.append(
+        svg('rect', { class: 'b-ing', x: x + bw / 2 - w - 1, y: y(d.ingresos), width: w, height: Math.max(0, y(0) - y(d.ingresos)), rx: 2 }),
+        svg('rect', { class: 'b-gas', x: x + bw / 2 + 1, y: y(d.gastos), width: w, height: Math.max(0, y(0) - y(d.gastos)), rx: 2 }),
+        svg('text', { class: 'ax', x: x + bw / 2, y: H - 9, 'text-anchor': 'middle' }, mesCorto(d.mes)));
+      const hit = svg('rect', { class: 'hit', x, y: T, width: bw, height: H - T - B }, svg('title', {}, `${mesLabel(d.mes)}\nIngresos ${eur.format(d.ingresos)}\nGastos ${eur.format(d.gastos)}\nNeto ${eur.format(d.neto)}`));
+      hit.addEventListener('click', () => onPick(d.mes));
+      g.append(hit);
+    });
+    return el('div', {}, g, el('div', { class: 'leg' }, el('span', {}, el('i', { class: 'f-ing' }), 'Ingresos'), el('span', {}, el('i', { class: 'f1' }), 'Gastos')));
+  }
+
+  function donut(items, total) {
+    if (!items.length) return el('p', { class: 'sub' }, 'Sin gastos en este periodo.');
+    let lista = items.slice(0, 7);
+    const resto = items.slice(7).reduce((a, x) => a + x.total, 0);
+    if (resto > 0) lista.push({ categoria: 'Otros', total: resto });
+    const R = 38, circ = 2 * Math.PI * R;
+    const g = svg('svg', { viewBox: '0 0 100 100', role: 'img', 'aria-label': 'Gastos por categoría' });
+    let off = 0;
+    lista.forEach((it, i) => {
+      const len = (it.total / total) * circ;
+      g.append(svg('circle', { class: 's' + i, cx: 50, cy: 50, r: R, fill: 'none', 'stroke-width': 14, 'stroke-dasharray': `${Math.max(0, len - 0.6)} ${circ}`, 'stroke-dashoffset': -off, transform: 'rotate(-90 50 50)' }, svg('title', {}, `${it.categoria}: ${eur.format(it.total)}`)));
+      off += len;
+    });
+    g.append(svg('text', { class: 'dn', x: 50, y: 52 }, eur.format(total).replace(/\s?€/, ' €')), svg('text', { class: 'dn2', x: 50, y: 63 }, 'gastos'));
+    const lg = el('div', { class: 'lg' }, lista.map((it, i) => el('div', {}, el('i', { class: 'f' + i }), el('span', {}, it.categoria), el('span', { class: 'n' }, eur.format(it.total), ' ', el('small', {}, Math.round((it.total / total) * 100) + '%')))));
+    return el('div', { class: 'donutbox' }, g, lg);
+  }
+
+  function renderResumen() {
+    const opts = periodos();
     const sel = $('mes'); const prev = sel.value;
-    sel.replaceChildren(...meses.map((m) => el('option', { value: m }, mesLabel(m))));
-    sel.value = meses.includes(prev) ? prev : meses[0] || '';
-    const mes = sel.value;
-    const s = C.summarize(S.rows, mes);
-    const cur = s.meses.find((x) => x.mes === mes) || { ingresos: 0, gastos: 0, neto: 0 };
-    $('k-ing').replaceChildren(money(cur.ingresos)); $('k-gas').replaceChildren(money(cur.gastos)); $('k-net').replaceChildren(money(cur.neto, true));
-    const lista = (id, items) => {
-      const max = Math.max(1, ...items.map((i) => Math.abs(i.total)));
-      $(id).replaceChildren(...(items.length ? items : [el('p', { class: 'sub' }, 'Nada este mes.')]).map((i) => i.categoria === undefined ? i
-        : el('div', { class: 'r' }, el('span', {}, i.categoria), el('span', { class: 'n' }, eur.format(i.total)), el('div', { class: 't' }, bar(Math.max(2, Math.abs(i.total) / max * 100))))));
-    };
-    lista('cats-gasto', s.gastos); lista('cats-ingreso', s.ingresos);
+    sel.replaceChildren(...opts.map((p) => el('option', { value: p }, perLabel(p))));
+    sel.value = opts.includes(prev) ? prev : opts[0] || 'all';
+    const per = sel.value;
+    const s = C.summarize(S.rows, per), p = s.periodo;
+    $('k-ing').replaceChildren(money(p.ingresos)); $('k-gas').replaceChildren(money(p.gastos)); $('k-net').replaceChildren(money(p.neto, true));
+    $('k-aho').textContent = p.ahorro == null ? '—' : Math.round(p.ahorro * 100) + '%';
+    $('notas').replaceChildren(...C.notas(S.rows, per, (n) => eur.format(n)).map((t) => el('li', {}, t)));
+    $('chart-meses').replaceChildren(chartMeses(s.meses, per, (m) => { $('mes').value = m; renderResumen(); }));
+    $('donut').replaceChildren(donut(s.gastos, s.gastos.reduce((a, x) => a + x.total, 0)));
+    $('top').tBodies[0].replaceChildren(...(s.top.length ? s.top : []).map((r) => el('tr', {},
+      el('td', {}, C.titulo(r), el('div', { class: 'sub' }, fdate(String(r.fecha)) + ' · ' + r.categoria)), el('td', { class: 'n' }, eur.format(-r.importe)))));
+    $('cats-ingreso').replaceChildren(...(s.ingresos.length ? s.ingresos : [el('p', { class: 'sub' }, 'Sin ingresos en este periodo.')]).map((i) => i.categoria === undefined ? i
+      : el('div', { class: 'r' }, el('span', {}, i.categoria), el('span', { class: 'n' }, eur.format(i.total)))));
+    const fijos = C.recurrentes(S.rows);
+    $('fijos').tBodies[0].replaceChildren(...fijos.map((f) => el('tr', {}, el('td', {}, f.nombre), el('td', {}, f.categoria), el('td', { class: 'n' }, eur.format(f.importe)))));
+    $('fijos-total').textContent = fijos.length ? `Total aproximado: ${eur.format(fijos.reduce((a, x) => a + x.importe, 0))} al mes (conceptos con el mismo importe en 3 o más meses).` : 'Aún no hay suficientes meses para detectar gastos fijos.';
     $('meses').tBodies[0].replaceChildren(...s.meses.slice(0, 12).map((m) => el('tr', {},
       el('td', {}, mesLabel(m.mes)), el('td', { class: 'n' }, eur.format(m.ingresos)), el('td', { class: 'n' }, eur.format(m.gastos)), el('td', { class: 'n' }, money(m.neto, true)))));
     const n = sinCat().length;
@@ -158,14 +226,14 @@
     const rows = S.rows.filter((r) =>
       (!fc.value || r.cuenta === fc.value) && (!fm.value || String(r.fecha).startsWith(fm.value)) &&
       (!$('f-sin').checked || r.categoria === C.SIN_CAT) &&
-      (!q || C.norm(r.concepto + ' ' + r.detalle + ' ' + r.categoria).includes(q)))
+      (!q || C.norm(r.concepto + ' ' + r.detalle + ' ' + r.categoria + ' ' + (r.nota || '')).includes(q)))
       .sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)) || b.fila - a.fila);
     $('tabla').tBodies[0].replaceChildren(...rows.slice(0, S.limite).map((r) => el('tr', {},
       el('td', {}, fdate(String(r.fecha))),
       el('td', {}, S.cuentas[r.cuenta] || r.cuenta),
-      el('td', {}, r.detalle || r.concepto, r.detalle ? el('div', { class: 'sub' }, r.concepto) : null),
+      el('td', {}, C.titulo(r), C.titulo(r) !== r.concepto ? el('div', { class: 'sub' }, r.concepto) : null),
       el('td', { class: 'n' }, money(r.importe, true)),
-      el('td', {}, el('button', { class: 'pill' + (r.categoria === C.SIN_CAT ? ' sin' : ''), onclick: () => editar(r) }, r.categoria + (r.tipo === 'neutro' ? ' · no computa' : ''))))));
+      el('td', {}, el('button', { class: 'pill' + (r.categoria === C.SIN_CAT ? ' sin' : ''), onclick: () => editar(r) }, r.categoria + (r.tipo === 'neutro' ? ' · no computa' : '')), r.nota ? el('div', { class: 'nota' }, r.nota) : null))));
     $('mas').hidden = rows.length <= S.limite;
   }
   for (const id of ['q', 'f-cuenta', 'f-mes', 'f-sin']) $(id).addEventListener('input', () => { S.limite = 200; renderMovs(); });
@@ -175,10 +243,11 @@
   let editando = null;
   function editar(r) {
     editando = r;
-    $('dlg-title').textContent = (r.detalle || r.concepto) + ' · ' + eur.format(r.importe);
+    $('dlg-title').textContent = (C.titulo(r)) + ' · ' + eur.format(r.importe);
     $('d-cat').value = r.categoria === C.SIN_CAT ? '' : r.categoria;
     $('d-pat').value = C.suggestPattern(r);
     $('d-tipo').value = 'auto';
+    $('d-nota').value = r.nota || '';
     $('cats-list').replaceChildren(...[...new Set([...S.rows.map((x) => x.categoria), ...S.reglas.map((x) => x.categoria)])].filter((c) => c !== C.SIN_CAT).sort().map((c) => el('option', { value: c })));
     $('dlg').showModal();
   }
@@ -190,7 +259,7 @@
     run(async () => {
       const tipoDe = (r) => (tipoSel === 'auto' ? (r.importe < 0 ? 'gasto' : 'ingreso') : tipoSel);
       const cambios = new Map([[editando.fila, editando]]);
-      editando.categoria = categoria; editando.tipo = tipoDe(editando);
+      editando.categoria = categoria; editando.tipo = tipoDe(editando); editando.nota = $('d-nota').value.trim();
       if (patron) {
         const p = C.norm(patron);
         for (const r of S.rows) if (r.categoria === C.SIN_CAT && C.norm(r.concepto + ' ' + r.detalle).includes(p)) {
@@ -201,7 +270,7 @@
       }
       await post(`${SH}${S.sheetId}/values:batchUpdate`, {
         valueInputOption: 'RAW',
-        data: [...cambios.values()].map((r) => ({ range: `Movimientos!H${r.fila}:J${r.fila}`, values: [[r.categoria, r.tipo, r.pareja || '']] })),
+        data: [...cambios.values()].map((r) => ({ range: `Movimientos!H${r.fila}:K${r.fila}`, values: [[r.categoria, r.tipo, r.pareja || '', r.nota || '']] })),
       });
       say(cambios.size > 1 ? `Actualizados ${cambios.size} movimientos y guardada la regla.` : 'Guardado.');
       render();
@@ -268,7 +337,7 @@
     }
     añadidos.sort((a, b) => a.fecha.localeCompare(b.fecha));
     if (añadidos.length) {
-      await post(`${SH}${S.sheetId}/values/Movimientos!A:J:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, { values: añadidos.map(C.toRow) });
+      await post(`${SH}${S.sheetId}/values/Movimientos!A:K:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, { values: añadidos.map(C.toRow) });
       await load();
       const cambios = C.pairInternal(S.rows);
       if (cambios.length) {

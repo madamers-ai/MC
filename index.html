@@ -29,19 +29,34 @@
 
   <section id="resumen" hidden>
     <div class="bar">
-      <select id="mes" aria-label="Mes"></select>
+      <select id="mes" aria-label="Periodo"></select>
       <a href="#" id="revisar" hidden></a>
     </div>
     <div class="kpis">
       <div><small>Ingresos</small><b id="k-ing"></b></div>
       <div><small>Gastos</small><b id="k-gas"></b></div>
       <div><small>Neto</small><b id="k-net"></b></div>
+      <div><small>Ahorro</small><b id="k-aho"></b></div>
     </div>
-    <h2>Gastos por categoría</h2>
-    <div id="cats-gasto" class="cats"></div>
-    <h2>Ingresos</h2>
-    <div id="cats-ingreso" class="cats"></div>
-    <h2>Últimos meses</h2>
+    <ul id="notas" class="notas"></ul>
+    <h2>Ingresos y gastos por mes</h2>
+    <div id="chart-meses" class="chart"></div>
+    <div class="dos">
+      <div>
+        <h2>Gastos por categoría</h2>
+        <div id="donut" class="donutbox"></div>
+      </div>
+      <div>
+        <h2>Mayores gastos</h2>
+        <table id="top"><tbody></tbody></table>
+        <h2>Ingresos</h2>
+        <div id="cats-ingreso" class="cats"></div>
+      </div>
+    </div>
+    <h2>Gastos fijos que se repiten</h2>
+    <table id="fijos"><thead><tr><th>Concepto</th><th>Categoría</th><th class="n">Al mes</th></tr></thead><tbody></tbody></table>
+    <p id="fijos-total" class="sub"></p>
+    <h2>Mes a mes</h2>
     <table id="meses"><thead><tr><th>Mes</th><th class="n">Ingresos</th><th class="n">Gastos</th><th class="n">Neto</th></tr></thead><tbody></tbody></table>
   </section>
 
@@ -53,7 +68,7 @@
       <label><input type="checkbox" id="f-sin"> Solo sin categoría</label>
     </div>
     <div class="scroll">
-      <table id="tabla"><thead><tr><th>Fecha</th><th>Cuenta</th><th>Concepto</th><th class="n">Importe</th><th>Categoría</th></tr></thead><tbody></tbody></table>
+      <table id="tabla"><thead><tr><th>Fecha</th><th>Cuenta</th><th>Concepto</th><th class="n">Importe</th><th>Categoría y nota</th></tr></thead><tbody></tbody></table>
     </div>
     <button id="mas" hidden>Mostrar más</button>
   </section>
@@ -75,6 +90,8 @@
     <datalist id="cats-list"></datalist>
     <label>Aplicar también a movimientos que contengan
       <input id="d-pat" placeholder="(vacío = solo este movimiento)"></label>
+    <label>Nota (opcional)
+      <input id="d-nota" placeholder="Para qué fue, a quién..."></label>
     <label>Tipo
       <select id="d-tipo">
         <option value="auto">Automático (según signo)</option>
