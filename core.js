@@ -8,12 +8,14 @@
 
   const SIN_CAT = 'Sin categoría';
   const INTERNA = 'Transferencia interna';
+  const TRASPASO = 'Traspaso entre cuentas';
 
-  // Las claves no cambian nunca; los nombres se editan en la pestaña "Cuentas" de la hoja.
-  const CUENTAS = [
-    { key: 'cuenta_a', nombre: 'Cuenta A', tarjeta: false },
-    { key: 'cuenta_b', nombre: 'Cuenta B', tarjeta: false },
-    { key: 'tarjeta', nombre: 'Tarjeta prepago', tarjeta: true },
+  // Las claves no cambian nunca (los ids de los movimientos dependen de ellas).
+  // Nombres y ámbitos se editan en la app o en la pestaña "Cuentas" de la hoja.
+  const CUENTAS_INICIALES = [
+    { key: 'cuenta_a', nombre: 'Cuenta A', ambito: 'Personal', tarjeta: false },
+    { key: 'cuenta_b', nombre: 'Cuenta B', ambito: 'Empresa', tarjeta: false },
+    { key: 'tarjeta', nombre: 'Tarjeta online', ambito: 'Personal', tarjeta: true },
   ];
 
   // [patrón (sin tildes, minúsculas), categoría, tipo]. Gana la primera que coincida.
@@ -22,10 +24,10 @@
     ['recarrega de targetes', INTERNA, 'neutro'],
     ['recarga de tarjetas', INTERNA, 'neutro'],
     ['carga tjt', INTERNA, 'neutro'],
-    ['traspas a compte', INTERNA, 'neutro'],
-    ['traspas des de compte', INTERNA, 'neutro'],
-    ['traspaso a cuenta', INTERNA, 'neutro'],
-    ['traspaso desde cuenta', INTERNA, 'neutro'],
+    ['traspas a compte', TRASPASO, 'traspaso'],
+    ['traspas des de compte', TRASPASO, 'traspaso'],
+    ['traspaso a cuenta', TRASPASO, 'traspaso'],
+    ['traspaso desde cuenta', TRASPASO, 'traspaso'],
     ['prestec provisional', 'Préstamo a 9metall', 'neutro'],
     ['retorn prestec', 'Préstamo a 9metall', 'neutro'],
     ['amortitzacio de prestec', 'Préstamo (cuota)', 'gasto'],
@@ -48,6 +50,25 @@
     ['suno', 'Suscripciones', 'auto'],
     ['blizzard', 'Ocio', 'auto'],
     ['bizum', 'Bizum', 'auto'],
+    ['veterinari', 'Veterinario', 'gasto'],
+    ['gasoil', 'Combustible', 'gasto'],
+    ['gasoleo', 'Combustible', 'gasto'],
+    ['carburant', 'Combustible', 'gasto'],
+    ['repsol', 'Combustible', 'gasto'],
+    ['cepsa', 'Combustible', 'gasto'],
+    ['galp', 'Combustible', 'gasto'],
+    ['endesa', 'Suministros', 'gasto'],
+    ['iberdrola', 'Suministros', 'gasto'],
+    ['naturgy', 'Suministros', 'gasto'],
+    ['aigues', 'Suministros', 'gasto'],
+    ['mercadona', 'Supermercado', 'gasto'],
+    ['bonpreu', 'Supermercado', 'gasto'],
+    ['caprabo', 'Supermercado', 'gasto'],
+    ['lidl', 'Supermercado', 'gasto'],
+    ['carrefour', 'Supermercado', 'gasto'],
+    ['amazon', 'Compras online', 'gasto'],
+    ['netflix', 'Suscripciones', 'auto'],
+    ['spotify', 'Suscripciones', 'auto'],
   ];
 
   /** Texto corto para mostrar: el detalle, salvo que sea solo una referencia. */
@@ -184,9 +205,10 @@
   }
 
   // ---------- Categorías ----------
-  function classify(m, reglas) {
+  function classify(m, reglas, ambito) {
     const txt = norm(m.concepto + ' ' + m.detalle);
     for (const r of reglas) {
+      if (r.ambito && ambito && r.ambito !== ambito) continue;
       const p = norm(r.patron);
       if (p && txt.includes(p)) {
         const tipo = r.tipo && r.tipo !== 'auto' ? r.tipo : m.importe < 0 ? 'gasto' : 'ingreso';
@@ -204,11 +226,16 @@
 
   const transferLike = (r) => /traspas|transfer|recar|carga tjt/.test(norm(r.concepto + ' ' + r.detalle));
   const dayNum = (iso) => Math.round(Date.parse(iso + 'T00:00:00Z') / 86400000);
+  const esAuto = (c) => c === INTERNA || c === TRASPASO || /^Traspaso (a|desde) /.test(c || '');
 
-  /** Empareja salidas y entradas del mismo importe entre cuentas distintas (±5 días):
-      recargas de la tarjeta, traspasos entre cuentas. Devuelve solo los cambios. */
-  function pairInternal(rows, maxDias = 5) {
-    const libres = rows.filter((r) => !r.pareja && (r.categoria === SIN_CAT || r.categoria === INTERNA));
+  /** Empareja salidas y entradas del mismo importe entre cuentas distintas (±5 días) y decide qué son:
+      - mismo ámbito (p. ej. recarga de tu tarjeta): Transferencia interna, no computa.
+      - distinto ámbito (empresa -> personal): "Traspaso a/desde X", cuenta en cada ámbito y se anula en la vista Todo.
+      ambitoDe(cuenta) -> nombre del ámbito. Devuelve solo los cambios {id, categoria, tipo, pareja}. */
+  function reconcile(rows, ambitoDe, maxDias = 5) {
+    const work = new Map(rows.map((r) => [r.id, { ...r }]));
+    const all = [...work.values()];
+    const libres = all.filter((r) => !r.pareja && (r.categoria === SIN_CAT || esAuto(r.categoria)));
     const porCent = new Map();
     for (const r of libres) {
       const c = Math.round(r.importe * 100);
@@ -218,24 +245,52 @@
     const cand = [];
     for (const [c, list] of porCent) {
       if (c <= 0) continue;
-      const neg = porCent.get(-c) || [];
-      for (const a of list) for (const b of neg) {
+      for (const a of list) for (const b of porCent.get(-c) || []) {
         if (a.cuenta === b.cuenta) continue;
-        const esTarjeta = a.cuenta === 'tarjeta' || b.cuenta === 'tarjeta';
-        if (!esTarjeta && !(transferLike(a) && transferLike(b))) continue;
+        const tarjeta = a.cuenta === 'tarjeta' || b.cuenta === 'tarjeta';
+        if (!tarjeta && !(transferLike(a) && transferLike(b))) continue;
         const d = Math.abs(dayNum(a.fecha) - dayNum(b.fecha));
         if (d <= maxDias) cand.push({ a, b, d });
       }
     }
     cand.sort((x, y) => x.d - y.d);
-    const usados = new Set(), cambios = [];
+    const usados = new Set();
     for (const { a, b } of cand) {
       if (usados.has(a.id) || usados.has(b.id)) continue;
       usados.add(a.id); usados.add(b.id);
-      cambios.push({ id: a.id, categoria: INTERNA, tipo: 'neutro', pareja: b.id });
-      cambios.push({ id: b.id, categoria: INTERNA, tipo: 'neutro', pareja: a.id });
+      a.pareja = b.id; b.pareja = a.id;
     }
-    return cambios;
+    for (const r of all) {
+      if (!(esAuto(r.categoria) || (r.pareja && r.categoria === SIN_CAT))) continue;
+      const p = r.pareja ? work.get(r.pareja) : null;
+      if (p) {
+        const otro = ambitoDe(p.cuenta);
+        if (ambitoDe(r.cuenta) === otro) { r.categoria = INTERNA; r.tipo = 'neutro'; }
+        else { r.categoria = r.importe < 0 ? `Traspaso a ${otro}` : `Traspaso desde ${otro}`; r.tipo = 'traspaso'; }
+      } else if (/traspas/.test(norm(r.concepto))) { r.categoria = TRASPASO; r.tipo = 'traspaso'; }
+    }
+    const orig = new Map(rows.map((r) => [r.id, r]));
+    return all
+      .filter((r) => { const o = orig.get(r.id); return o.categoria !== r.categoria || o.tipo !== r.tipo || (o.pareja || '') !== (r.pareja || ''); })
+      .map((r) => ({ id: r.id, categoria: r.categoria, tipo: r.tipo, pareja: r.pareja || '' }));
+  }
+
+  /** Último saldo informado en un fichero de cuenta (el banco lista lo más reciente primero). */
+  function ultimoSaldo(movs) {
+    const con = movs.filter((m) => m.saldo != null);
+    if (!con.length) return null;
+    const nuevoPrimero = movs[0].fecha >= movs[movs.length - 1].fecha;
+    const m = nuevoPrimero ? con[0] : con[con.length - 1];
+    return { saldo: m.saldo, fecha: con.reduce((a, x) => (x.fecha > a ? x.fecha : a), '') };
+  }
+
+  /** Saldo aproximado a partir de lo ya guardado (por si aún no se ha reimportado el fichero). */
+  function saldoAproximado(rows, cuenta) {
+    const rs = rows.filter((r) => r.cuenta === cuenta && r.saldo != null && r.saldo !== '' && !isNaN(r.saldo));
+    if (!rs.length) return null;
+    const f = rs.reduce((a, r) => (r.fecha > a ? r.fecha : a), '');
+    const m = rs.filter((r) => r.fecha === f).sort((a, b) => a.fila - b.fila)[0];
+    return { saldo: m.saldo, fecha: f };
   }
 
   // ---------- Resumen ----------
@@ -301,6 +356,26 @@
       .sort((a, b) => b.importe - a.importe);
   }
 
+  /** Categorías en las que este mes gastas claramente más que tu media de los 3 meses anteriores. */
+  function desvios(rows, mes, minPct = 0.3, minAbs = 40) {
+    const porMes = new Map();
+    for (const r of rows) {
+      if (r.tipo !== 'gasto' || /^Traspaso/.test(r.categoria)) continue; // los traspasos son decisiones, no desvíos
+      const m = String(r.fecha).slice(0, 7);
+      if (!porMes.has(m)) porMes.set(m, new Map());
+      const c = porMes.get(m);
+      c.set(r.categoria, (c.get(r.categoria) || 0) - r.importe);
+    }
+    const previos = [...porMes.keys()].filter((m) => m < mes).sort().slice(-3);
+    if (previos.length < 2 || !porMes.has(mes)) return [];
+    const out = [];
+    for (const [categoria, tot] of porMes.get(mes)) {
+      const media = previos.reduce((a, m) => a + (porMes.get(m).get(categoria) || 0), 0) / previos.length;
+      if (tot - media >= minAbs && tot > media * (1 + minPct)) out.push({ categoria, actual: r2(tot), media: r2(media), diff: r2(tot - media) });
+    }
+    return out.sort((a, b) => b.diff - a.diff).slice(0, 5);
+  }
+
   /** Frases con lo más llamativo del periodo. fmt formatea euros. */
   function notas(rows, per, fmt) {
     const out = [];
@@ -323,6 +398,10 @@
       const t = s.top[0], f = String(t.fecha);
       out.push(`El movimiento más grande: ${titulo(t)} (${fmt(-t.importe)}, ${f.slice(8)}/${f.slice(5, 7)}).`);
     }
+    if (/^\d{4}-\d{2}$/.test(per)) {
+      const dv = desvios(rows, per);
+      if (dv.length) out.push(`Gastas de más que de costumbre en ${dv.slice(0, 3).map((d) => `«${d.categoria}» (+${fmt(d.diff)})`).join(', ')}.`);
+    }
     const rec = recurrentes(rows);
     if (rec.length) out.push(`Gastos fijos que se repiten cada mes: unos ${fmt(rec.reduce((a, x) => a + x.importe, 0))} (${rec.length} conceptos).`);
     if (p.ingresos === 0 && p.gastos > 0) out.push('No hay ingresos registrados en este periodo: puede que falte importar alguna cuenta.');
@@ -344,8 +423,8 @@
   }
 
   return {
-    SIN_CAT, INTERNA, CUENTAS, REGLAS_INICIALES, COLS,
+    SIN_CAT, INTERNA, TRASPASO, CUENTAS_INICIALES, REGLAS_INICIALES, COLS,
     norm, parseBBVA, assignIds, suggestAccount, classify, suggestPattern,
-    pairInternal, summarize, recurrentes, notas, titulo, toRow, fromRow, contentKey,
+    reconcile, ultimoSaldo, saldoAproximado, desvios, summarize, recurrentes, notas, titulo, esAuto, toRow, fromRow, contentKey,
   };
 });

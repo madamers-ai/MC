@@ -12,6 +12,10 @@ App privada para contabilizar los extractos de BBVA. El código vive en GitHub (
 3. Copia el ID de cliente en `config.js` y súbelo a GitHub.
 4. Abre tu URL, **Conectar con Google**. La primera vez crea la hoja «Finanzas personales (datos de la app)» en tu Drive.
 
+## Ámbitos (empresa, personal, familia…)
+
+Cada cuenta o tarjeta pertenece a un **ámbito**. Arriba eliges Empresa, Personal o Todo y todo se recalcula para ese ámbito. Las cuentas se editan y añaden en *Importar → Tus cuentas*. Un traspaso entre ámbitos (p. ej. tu nómina de la empresa a la cuenta personal) cuenta como gasto en uno e ingreso en el otro, y se anula en «Todo». Las recargas de tu tarjeta (mismo ámbito) no cuentan en ninguno.
+
 ## Uso
 
 Descarga los movimientos en BBVA (cuentas y tarjeta), pestaña **Importar**, elige los ficheros, indica a qué cuenta corresponde cada uno y pulsa Importar. Puedes solapar fechas: lo ya importado se ignora.

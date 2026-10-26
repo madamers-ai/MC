@@ -27,6 +27,11 @@
     <p>Tus datos viven en una hoja de tu Google Drive. Esta página solo es el programa: los extractos se procesan en tu navegador.</p>
   </section>
 
+  <div id="contexto" hidden>
+    <div id="ambitos" class="seg" role="tablist" aria-label="Ámbito"></div>
+    <div id="saldos" class="saldos"></div>
+  </div>
+
   <section id="resumen" hidden>
     <div class="bar">
       <select id="mes" aria-label="Periodo"></select>
@@ -45,6 +50,7 @@
       <div>
         <h2>Gastos por categoría</h2>
         <div id="donut" class="donutbox"></div>
+        <p id="pre-ayuda" class="sub" hidden>Pulsa una categoría para ponerle un presupuesto mensual.</p>
       </div>
       <div>
         <h2>Mayores gastos</h2>
@@ -52,6 +58,11 @@
         <h2>Ingresos</h2>
         <div id="cats-ingreso" class="cats"></div>
       </div>
+    </div>
+    <div id="sec-desvios" hidden>
+      <h2>Dónde gastas más de lo habitual</h2>
+      <table id="desvios"><thead><tr><th>Categoría</th><th class="n">Este mes</th><th class="n">Tu media</th><th class="n">Diferencia</th></tr></thead><tbody></tbody></table>
+      <p class="sub">Comparado con la media de los 3 meses anteriores.</p>
     </div>
     <h2>Gastos fijos que se repiten</h2>
     <table id="fijos"><thead><tr><th>Concepto</th><th>Categoría</th><th class="n">Al mes</th></tr></thead><tbody></tbody></table>
@@ -76,20 +87,35 @@
   <section id="importar" hidden>
     <label class="drop" id="drop">
       <input type="file" id="files" multiple accept=".xlsx,.xls,.csv">
-      <span>Elige los ficheros de BBVA (cuentas y tarjeta). Puedes subir varios a la vez.</span>
+      <span>Elige los ficheros de BBVA (cuentas y tarjetas). Puedes subir varios a la vez.</span>
     </label>
     <div id="lista"></div>
     <button id="go" hidden>Importar</button>
+
+    <h2>Tus cuentas</h2>
+    <div id="cuentas" class="cuentas"></div>
+    <form id="nueva" class="nueva">
+      <input id="n-nombre" placeholder="Nueva cuenta o tarjeta" required>
+      <input id="n-ambito" list="ambitos-list" placeholder="Ámbito (Empresa, Personal, Familia…)" required>
+      <select id="n-tipo"><option value="cuenta">Cuenta</option><option value="tarjeta">Tarjeta</option></select>
+      <button>Añadir</button>
+    </form>
+    <datalist id="ambitos-list"></datalist>
   </section>
 </main>
 
+<footer id="pie" hidden>
+  <button id="lock" class="lnk">Cerrar sesión</button> · <button id="pinbtn" class="lnk">Clave de acceso</button>
+</footer>
+
 <dialog id="dlg">
-  <form method="dialog" id="dlg-form">
+  <form id="dlg-form">
     <h3 id="dlg-title"></h3>
     <label>Categoría <input id="d-cat" list="cats-list" required></label>
     <datalist id="cats-list"></datalist>
     <label>Aplicar también a movimientos que contengan
       <input id="d-pat" placeholder="(vacío = solo este movimiento)"></label>
+    <label class="chk"><input type="checkbox" id="d-solo" checked> Solo en <span id="d-amb"></span></label>
     <label>Nota (opcional)
       <input id="d-nota" placeholder="Para qué fue, a quién..."></label>
     <label>Tipo
@@ -99,7 +125,24 @@
         <option value="ingreso">Ingreso</option>
         <option value="neutro">No computa</option>
       </select></label>
-    <div class="row"><button value="cancel" type="button" id="d-cancel">Cancelar</button><button id="d-ok" value="ok">Guardar</button></div>
+    <div class="row"><button type="button" id="d-cancel">Cancelar</button><button id="d-ok">Guardar</button></div>
+  </form>
+</dialog>
+
+<dialog id="dlg-pre">
+  <form id="pre-form">
+    <h3 id="pre-title"></h3>
+    <label>Presupuesto mensual (€) <input id="pre-val" type="number" min="0" step="1" inputmode="decimal"></label>
+    <div class="row"><button type="button" id="pre-quitar">Quitar</button><button type="button" id="pre-cancel">Cancelar</button><button id="pre-ok">Guardar</button></div>
+  </form>
+</dialog>
+
+<dialog id="dlg-pin">
+  <form id="pin-form">
+    <h3 id="pin-title"></h3>
+    <label><span id="pin-ayuda"></span><input id="pin-val" type="password" autocomplete="off"></label>
+    <p id="pin-err" class="neg" hidden></p>
+    <div class="row"><button type="button" id="pin-cancel">Cancelar</button><button id="pin-ok">Aceptar</button></div>
   </form>
 </dialog>
 
