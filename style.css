@@ -94,3 +94,21 @@ footer{max-width:860px;margin:32px auto 24px;padding:0 16px;color:var(--mut);fon
 .lnk{border:0;padding:0;color:var(--mut);text-decoration:underline;cursor:pointer;background:none}
 dialog .chk{display:flex;gap:8px;align-items:center;color:var(--fg);font-size:13px}
 dialog .row button{white-space:nowrap}
+
+nav{flex-wrap:wrap}
+tr.grupo td{font-weight:600;background:var(--line);border-bottom:0}
+tr.grupo td:first-child{border-radius:6px 0 0 6px}tr.grupo td:last-child{border-radius:0 6px 6px 0}
+td .t{height:6px;background:var(--line);border-radius:3px;min-width:80px}
+td .t i{display:block;height:100%;background:var(--pos);border-radius:3px}
+td .over i{background:var(--neg)}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;border:1px solid var(--line);white-space:nowrap}
+.badge.ok{color:var(--pos);border-color:var(--pos)}
+.badge.warn{color:var(--gas);border-color:var(--gas)}
+.badge.bad{color:var(--neg);border-color:var(--neg)}
+.prest{border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:12px}
+.prest h3{margin:0 0 2px;font-size:16px}
+.prest .kpis{margin:10px 0}
+.prest table{margin-top:6px}
+#nprest{grid-template-columns:1fr 1fr 1fr}
+#nprest input[type=number]{grid-column:1/-1}
+@media (max-width:620px){#nprest{grid-template-columns:1fr}}

@@ -411,8 +411,114 @@
     return out;
   }
 
+  // ---------- Partidas (grupos de categorías) ----------
+  const GRUPOS_INICIALES = [
+    ['Hipoteca', 'Casa'], ['Suministros', 'Casa'], ['Supermercado', 'Casa'],
+    ['Ocio', 'Ocio'], ['Suscripciones', 'Ocio'], ['Suscripciones IA', 'Ocio'], ['Compras online', 'Ocio'],
+    ['Facturas proveedores', 'Proveedores'], ['Agrícola y ganadera', 'Proveedores'], ['Veterinario', 'Proveedores'],
+    ['Combustible', 'Proveedores'], ['Gestoría', 'Proveedores'],
+    ['Impuestos', 'Impuestos y cuotas'], ['Seguridad Social', 'Impuestos y cuotas'], ['Seguros', 'Impuestos y cuotas'],
+    ['Préstamo (cuota)', 'Financiación'],
+  ];
+
+  /** mapa: Map(categoría -> grupo) leído de la hoja. */
+  function grupoDe(cat, mapa) {
+    if (mapa && mapa.has(cat)) return mapa.get(cat);
+    if (/^Traspaso/.test(cat)) return 'Traspasos';
+    if (/^Préstamo/.test(cat)) return 'Préstamos';
+    return cat === SIN_CAT ? SIN_CAT : 'Otros';
+  }
+
+  /** Gasto del periodo agrupado: [{grupo, total, categorias:[{categoria,total}]}] */
+  function partidas(rows, per, mapa) {
+    const cats = new Map();
+    for (const r of rows) if (r.tipo === 'gasto' && inPer(r.fecha, per)) cats.set(r.categoria, (cats.get(r.categoria) || 0) - r.importe);
+    const grupos = new Map();
+    for (const [categoria, total] of cats) {
+      const g = grupoDe(categoria, mapa);
+      if (!grupos.has(g)) grupos.set(g, { grupo: g, total: 0, categorias: [] });
+      const o = grupos.get(g);
+      o.total += total; o.categorias.push({ categoria, total: r2(total) });
+    }
+    return [...grupos.values()]
+      .map((o) => ({ ...o, total: r2(o.total), categorias: o.categorias.sort((a, b) => b.total - a.total) }))
+      .sort((a, b) => b.total - a.total);
+  }
+
+  // ---------- Nóminas ----------
+  const MESES = { gener: 1, enero: 1, febrer: 2, febrero: 2, marc: 3, marzo: 3, abril: 4, maig: 5, mayo: 5, juny: 6, junio: 6, juliol: 7, julio: 7, agost: 8, agosto: 8, setembre: 9, septiembre: 9, octubre: 10, novembre: 11, noviembre: 11, desembre: 12, diciembre: 12 };
+  const pad2 = (n) => String(n).padStart(2, '0');
+
+  /** Mes al que corresponde una nómina según su concepto («Nomina juny 2026», «Nomina agost»…). */
+  function mesNomina(texto, fecha) {
+    const t = norm(texto);
+    const anio = t.match(/\b(20\d{2})\b/);
+    const palabra = Object.keys(MESES).find((k) => new RegExp('\\b' + k + '\\b').test(t));
+    if (!palabra) return null;
+    const mes = MESES[palabra];
+    let y = anio ? +anio[1] : +fecha.slice(0, 4);
+    if (!anio && mes > +fecha.slice(5, 7)) y -= 1; // «Nomina desembre» cobrada en enero
+    return `${y}-${pad2(mes)}`;
+  }
+
+  const sumaMes = (mes, d) => { const [y, m] = mes.split('-').map(Number); return new Date(Date.UTC(y, m - 1 + d, 1)).toISOString().slice(0, 7); };
+
+  /** Estado de cada nómina: ¿cobrada? ¿traspasada a la cuenta personal? rows = TODAS las filas (sin filtrar ámbito). */
+  function nominas(rows, hoy) {
+    const esNom = (r) => /nomina/.test(norm(r.concepto + ' ' + r.detalle));
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const cobros = rows.filter((r) => esNom(r) && r.importe > 0 && r.tipo === 'ingreso');
+    const tras = rows.filter((r) => {
+      if (!esNom(r) || r.tipo !== 'traspaso') return false;
+      const par = r.pareja && byId.get(r.pareja);
+      return !(r.importe > 0 && par && par.tipo === 'traspaso'); // cada traspaso, una sola vez
+    });
+    const meses = new Map();
+    const add = (r, clave) => {
+      const m = mesNomina(r.concepto + ' ' + r.detalle, r.fecha);
+      if (!m) return;
+      if (!meses.has(m)) meses.set(m, { mes: m, cobro: null, traspaso: null });
+      const o = meses.get(m), v = Math.abs(r.importe);
+      o[clave] = o[clave] ? { fecha: r.fecha > o[clave].fecha ? r.fecha : o[clave].fecha, importe: r2(o[clave].importe + v) } : { fecha: r.fecha, importe: v };
+    };
+    cobros.forEach((r) => add(r, 'cobro')); tras.forEach((r) => add(r, 'traspaso'));
+    if (!meses.size) return { filas: [], cobrado: 0, traspasado: 0, retenido: 0, porTraspasar: 0 };
+    const cuentasCobro = new Set(cobros.map((r) => r.cuenta));
+    const primera = cuentasCobro.size ? rows.filter((r) => cuentasCobro.has(r.cuenta)).reduce((a, r) => (!a || r.fecha < a ? r.fecha : a), '') : '';
+    const encontrados = [...meses.keys()].sort();
+    const prevHoy = sumaMes(hoy.slice(0, 7), -1);
+    const fin = encontrados[encontrados.length - 1] > prevHoy ? encontrados[encontrados.length - 1] : prevHoy;
+    const filas = [];
+    for (let m = encontrados[0]; m <= fin; m = sumaMes(m, 1)) {
+      const o = meses.get(m) || { mes: m, cobro: null, traspaso: null };
+      const sinExtracto = !!primera && primera > sumaMes(m, 1) + '-01';
+      let estado;
+      if (o.cobro && o.traspaso) estado = 'ok';
+      else if (o.cobro) estado = 'falta-traspaso';
+      else if (o.traspaso) estado = sinExtracto ? 'traspasada-sin-extracto' : 'traspasada-sin-cobro';
+      else estado = sinExtracto ? 'sin-datos' : 'pendiente-cobro';
+      filas.push({ ...o, estado, retenido: o.cobro && o.traspaso ? r2(o.cobro.importe - o.traspaso.importe) : null });
+    }
+    filas.reverse();
+    const sum = (k) => r2(filas.reduce((a, f) => a + (f[k] ? f[k].importe : 0), 0));
+    return { filas, cobrado: sum('cobro'), traspasado: sum('traspaso'), retenido: r2(filas.reduce((a, f) => a + (f.retenido || 0), 0)), porTraspasar: filas.filter((f) => f.estado === 'falta-traspaso').length };
+  }
+
+  // ---------- Préstamos entre personas ----------
+  /** p: {id, persona, sentido:'presto'|'debo', inicial}. Los movimientos enlazados (campo prestamo) suman o restan. */
+  function estadoPrestamo(p, rows) {
+    const mv = rows.filter((r) => r.prestamo === p.id).sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
+    let prestado = Number(p.inicial) || 0, devuelto = 0;
+    for (const r of mv) {
+      const v = p.sentido === 'debo' ? r.importe : -r.importe; // dinero que sale hacia quien debe aumenta la deuda
+      if (v > 0) prestado += v; else devuelto += -v;
+    }
+    const pendiente = r2(prestado - devuelto);
+    return { prestado: r2(prestado), devuelto: r2(devuelto), pendiente, estado: pendiente <= 0.005 ? 'Pagado' : 'Pendiente', movimientos: mv };
+  }
+
   // ---------- Hoja <-> objetos ----------
-  const COLS = ['id', 'fecha', 'cuenta', 'concepto', 'detalle', 'importe', 'saldo', 'categoria', 'tipo', 'pareja', 'nota'];
+  const COLS = ['id', 'fecha', 'cuenta', 'concepto', 'detalle', 'importe', 'saldo', 'categoria', 'tipo', 'pareja', 'nota', 'prestamo'];
   const toRow = (m) => COLS.map((c) => (m[c] == null ? '' : m[c]));
   function fromRow(arr, rowNumber) {
     const o = { fila: rowNumber };
@@ -425,6 +531,6 @@
   return {
     SIN_CAT, INTERNA, TRASPASO, CUENTAS_INICIALES, REGLAS_INICIALES, COLS,
     norm, parseBBVA, assignIds, suggestAccount, classify, suggestPattern,
-    reconcile, ultimoSaldo, saldoAproximado, desvios, summarize, recurrentes, notas, titulo, esAuto, toRow, fromRow, contentKey,
+    GRUPOS_INICIALES, grupoDe, partidas, mesNomina, nominas, estadoPrestamo, reconcile, ultimoSaldo, saldoAproximado, desvios, summarize, recurrentes, notas, titulo, esAuto, toRow, fromRow, contentKey,
   };
 });

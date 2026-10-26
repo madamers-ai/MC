@@ -3,7 +3,7 @@
   const C = window.Core;
   const { CLIENT_ID, SHEET_NAME } = window.CONFIG;
   const SCOPE = 'https://www.googleapis.com/auth/drive.file';
-  const ESQUEMA = 2;
+  const ESQUEMA = 3;
   const $ = (id) => document.getElementById(id);
   const eur = new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR' });
   const fdate = (iso) => String(iso).slice(8, 10) + '/' + String(iso).slice(5, 7) + '/' + String(iso).slice(0, 4);
@@ -35,7 +35,8 @@
   const money = (n, signed) => el('span', { class: signed ? (n < 0 ? 'neg' : 'pos') : '' }, eur.format(n));
 
   // ---------- Estado ----------
-  const S = { token: null, sheetId: null, rows: [], reglas: [], cuentas: [], presup: [], ambito: 'all', pend: [], limite: 200 };
+  const S = { token: null, sheetId: null, rows: [], reglas: [], cuentas: [], presup: [], prestamos: [], grupos: new Map(), grupoFilas: new Map(), ambito: 'all', pend: [], limite: 200 };
+  const TABS = ['resumen', 'partidas', 'nominas', 'prestamos', 'movs', 'importar'];
   const cuentaDe = (key) => S.cuentas.find((c) => c.key === key);
   const ambitoDe = (key) => (cuentaDe(key) || {}).ambito || 'Personal';
   const nombreCuenta = (key) => (cuentaDe(key) || {}).nombre || key;
@@ -98,6 +99,7 @@
 
   // ---------- Hoja: creación y migración ----------
   const CABECERA_CUENTAS = ['clave', 'nombre', 'ambito', 'tipo', 'saldo', 'saldo_fecha', 'esquema'];
+  const CABECERA_PRESTAMOS = ['id', 'persona', 'sentido', 'concepto', 'inicial', 'ambito', 'fecha'];
 
   async function ensureSheet() {
     const q = encodeURIComponent(`name='${SHEET_NAME}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false`);
@@ -105,7 +107,7 @@
     if (found.files.length) return found.files[0].id;
     const created = await post(SH.slice(0, -1), {
       properties: { title: SHEET_NAME, locale: 'es_ES' },
-      sheets: ['Movimientos', 'Reglas', 'Cuentas', 'Presupuestos'].map((title) => ({ properties: { title, gridProperties: { frozenRowCount: 1 } } })),
+      sheets: ['Movimientos', 'Reglas', 'Cuentas', 'Presupuestos', 'Prestamos', 'Grupos'].map((title) => ({ properties: { title, gridProperties: { frozenRowCount: 1 } } })),
     });
     S.sheetId = created.spreadsheetId;
     await writeValues([
@@ -113,61 +115,66 @@
       { range: 'Reglas!A1', values: [['patron', 'categoria', 'tipo', 'ambito'], ...C.REGLAS_INICIALES.map((r) => [...r, ''])] },
       { range: 'Cuentas!A1', values: [CABECERA_CUENTAS, ...C.CUENTAS_INICIALES.map((c, i) => [c.key, c.nombre, c.ambito, c.tarjeta ? 'tarjeta' : 'cuenta', '', '', i === 0 ? ESQUEMA : ''])] },
       { range: 'Presupuestos!A1', values: [['ambito', 'categoria', 'mensual']] },
+      { range: 'Prestamos!A1', values: [CABECERA_PRESTAMOS] },
+      { range: 'Grupos!A1', values: [['categoria', 'grupo'], ...C.GRUPOS_INICIALES] },
     ]);
     return S.sheetId;
   }
 
-  /** Pasa una hoja creada con la versión anterior al esquema actual (ámbitos, presupuestos, traspasos). */
+  /** Pasa una hoja creada con una versión anterior al esquema actual. Es idempotente y no pisa tus cambios. */
   async function migrar() {
     const meta = await api(`${SH}${S.sheetId}?fields=sheets.properties.title`);
-    if (!meta.sheets.some((x) => x.properties.title === 'Presupuestos')) {
-      await post(`${SH}${S.sheetId}:batchUpdate`, { requests: [{ addSheet: { properties: { title: 'Presupuestos', gridProperties: { frozenRowCount: 1 } } } }] });
-      await writeValues([{ range: 'Presupuestos!A1', values: [['ambito', 'categoria', 'mensual']] }]);
-    }
+    const titulos = meta.sheets.map((x) => x.properties.title);
+    const faltan = ['Presupuestos', 'Prestamos', 'Grupos'].filter((t) => !titulos.includes(t));
     const cu = await getValues('Cuentas!A1:G20');
-    if ((cu[1] || [])[6] === ESQUEMA) return;
+    const esq = Number((cu[1] || [])[6]) || 0;
+    if (esq >= ESQUEMA && !faltan.length) return;
     say('Actualizando tu hoja a la nueva versión…');
+    if (faltan.length) await post(`${SH}${S.sheetId}:batchUpdate`, { requests: faltan.map((title) => ({ addSheet: { properties: { title, gridProperties: { frozenRowCount: 1 } } } })) });
+    const datos = [{ range: 'Movimientos!K1', values: [['nota', 'prestamo']] }];
+    if (faltan.includes('Presupuestos')) datos.push({ range: 'Presupuestos!A1', values: [['ambito', 'categoria', 'mensual']] });
+    if (faltan.includes('Prestamos')) datos.push({ range: 'Prestamos!A1', values: [CABECERA_PRESTAMOS] });
+    if (faltan.includes('Grupos')) datos.push({ range: 'Grupos!A1', values: [['categoria', 'grupo'], ...C.GRUPOS_INICIALES] });
 
-    // Deducimos qué cuenta es de empresa y cuál personal por lo que contiene.
-    const mv = await getValues('Movimientos!C2:E');
-    const hits = {};
-    for (const [cuenta, conc, det] of mv) {
-      const t = C.norm(String(conc || '') + ' ' + String(det || ''));
-      const h = (hits[cuenta] = hits[cuenta] || { p: 0, e: 0 });
-      if (/hipoteca/.test(t)) h.p++;
-      if (/tgss|seguretat social|agroseguro|talenom|amortitzacio/.test(t)) h.e++;
+    if (esq < 2) {
+      // Deducimos qué cuenta es de empresa y cuál personal por lo que contiene.
+      const mv = await getValues('Movimientos!C2:E');
+      const hits = {};
+      for (const [cuenta, conc, det] of mv) {
+        const t = C.norm(String(conc || '') + ' ' + String(det || ''));
+        const h = (hits[cuenta] = hits[cuenta] || { p: 0, e: 0 });
+        if (/hipoteca/.test(t)) h.p++;
+        if (/tgss|seguretat social|agroseguro|talenom|amortitzacio/.test(t)) h.e++;
+      }
+      const inferir = (key, def) => {
+        const h = hits[key];
+        if (h && h.e > 0 && h.p === 0) return 'Empresa';
+        if (h && h.p > 0 && h.e === 0) return 'Personal';
+        return def;
+      };
+      const viejo = Object.fromEntries(cu.slice(1).map((r) => [r[0], r]));
+      const nombresPorDefecto = ['Cuenta A', 'Cuenta B', 'Tarjeta prepago'];
+      const filas = C.CUENTAS_INICIALES.map((d, i) => {
+        const amb = d.tarjeta ? 'Personal' : inferir(d.key, d.ambito);
+        const old = viejo[d.key] && viejo[d.key][1];
+        const nombre = old && !nombresPorDefecto.includes(old) ? old : d.tarjeta ? 'Tarjeta online' : amb === 'Empresa' ? 'Empresa (A)' : 'Personal (B)';
+        return [d.key, nombre, amb, d.tarjeta ? 'tarjeta' : 'cuenta', '', '', i === 0 ? ESQUEMA : ''];
+      });
+      const rg = await getValues('Reglas!A2:D500');
+      const trasp = ['traspas a compte', 'traspas des de compte', 'traspaso a cuenta', 'traspaso desde cuenta'];
+      const reglas = rg.filter((r) => r[0]).map((r) => (trasp.includes(String(r[0])) ? [r[0], C.TRASPASO, 'traspaso', r[3] || ''] : [r[0], r[1] || '', r[2] || '', r[3] || '']));
+      const tengo = new Set(reglas.map((r) => C.norm(r[0])));
+      for (const [pt, c, t] of C.REGLAS_INICIALES) if (!tengo.has(C.norm(pt))) reglas.push([pt, c, t, '']);
+      datos.push({ range: 'Cuentas!A1', values: [CABECERA_CUENTAS, ...filas] }, { range: 'Reglas!A1', values: [['patron', 'categoria', 'tipo', 'ambito'], ...reglas] });
+    } else {
+      datos.push({ range: 'Cuentas!G1', values: [['esquema'], [ESQUEMA]] });
     }
-    const inferir = (key, def) => {
-      const h = hits[key];
-      if (h && h.e > 0 && h.p === 0) return 'Empresa';
-      if (h && h.p > 0 && h.e === 0) return 'Personal';
-      return def;
-    };
-    const viejo = Object.fromEntries(cu.slice(1).map((r) => [r[0], r]));
-    const nombresPorDefecto = ['Cuenta A', 'Cuenta B', 'Tarjeta prepago'];
-    const filas = C.CUENTAS_INICIALES.map((d, i) => {
-      const amb = d.tarjeta ? 'Personal' : inferir(d.key, d.ambito);
-      const old = viejo[d.key] && viejo[d.key][1];
-      const nombre = old && !nombresPorDefecto.includes(old) ? old : d.tarjeta ? 'Tarjeta online' : amb === 'Empresa' ? 'Empresa (A)' : 'Personal (B)';
-      return [d.key, nombre, amb, d.tarjeta ? 'tarjeta' : 'cuenta', '', '', i === 0 ? ESQUEMA : ''];
-    });
-
-    const rg = await getValues('Reglas!A2:D500');
-    const trasp = ['traspas a compte', 'traspas des de compte', 'traspaso a cuenta', 'traspaso desde cuenta'];
-    const reglas = rg.filter((r) => r[0]).map((r) => (trasp.includes(String(r[0])) ? [r[0], C.TRASPASO, 'traspaso', r[3] || ''] : [r[0], r[1] || '', r[2] || '', r[3] || '']));
-    const tengo = new Set(reglas.map((r) => C.norm(r[0])));
-    for (const [p, c, t] of C.REGLAS_INICIALES) if (!tengo.has(C.norm(p))) reglas.push([p, c, t, '']);
-
-    await writeValues([
-      { range: 'Cuentas!A1', values: [CABECERA_CUENTAS, ...filas] },
-      { range: 'Reglas!A1', values: [['patron', 'categoria', 'tipo', 'ambito'], ...reglas] },
-    ]);
+    await writeValues(datos);
   }
 
   async function load() {
-    const g = await api(`${SH}${S.sheetId}/values:batchGet?ranges=Movimientos!A2:K&ranges=Reglas!A2:D&ranges=Cuentas!A2:F&ranges=Presupuestos!A2:C&ranges=Movimientos!K1&valueRenderOption=UNFORMATTED_VALUE`);
-    const [mov, reg, cue, pre, hdr] = g.valueRanges.map((v) => v.values || []);
-    if (!hdr.length) await writeValues([{ range: 'Movimientos!K1', values: [['nota']] }]);
+    const g = await api(`${SH}${S.sheetId}/values:batchGet?ranges=Movimientos!A2:L&ranges=Reglas!A2:D&ranges=Cuentas!A2:F&ranges=Presupuestos!A2:C&ranges=Prestamos!A2:G&ranges=Grupos!A2:B&valueRenderOption=UNFORMATTED_VALUE`);
+    const [mov, reg, cue, pre, pr, gr] = g.valueRanges.map((v) => v.values || []);
     S.rows = mov.map((r, i) => C.fromRow(r, i + 2)).filter((r) => r.id);
     S.reglas = reg.filter((r) => r[0]).map((r) => ({ patron: String(r[0]), categoria: r[1] || C.SIN_CAT, tipo: r[2] || 'auto', ambito: r[3] ? String(r[3]) : '' }));
     S.cuentas = cue.map((r, i) => ({
@@ -175,6 +182,12 @@
       saldo: r[4] === '' || r[4] == null ? null : Number(r[4]), saldoFecha: r[5] ? String(r[5]) : '', fila: i + 2,
     })).filter((c) => c.key);
     S.presup = pre.map((r, i) => ({ ambito: String(r[0] || ''), categoria: String(r[1] || ''), mensual: Number(r[2]), fila: i + 2 })).filter((p) => p.ambito && p.categoria && p.mensual > 0);
+    S.prestamos = pr.map((r, i) => ({
+      id: String(r[0] || ''), persona: String(r[1] || ''), sentido: r[2] === 'debo' ? 'debo' : 'presto', concepto: String(r[3] || ''),
+      inicial: r[4] === '' || r[4] == null ? 0 : Number(r[4]), ambito: String(r[5] || ''), fecha: String(r[6] || ''), fila: i + 2,
+    })).filter((x) => x.id && x.persona);
+    S.grupoFilas = new Map(gr.map((r, i) => [String(r[0] || ''), { grupo: String(r[1] || ''), fila: i + 2 }]).filter((x) => x[0]));
+    S.grupos = new Map([...S.grupoFilas].filter(([, v]) => v.grupo).map(([k, v]) => [k, v.grupo]));
     if (S.ambito !== 'all' && !ambitos().includes(S.ambito)) S.ambito = 'all';
   }
 
@@ -209,8 +222,8 @@
   function signOut(texto) {
     const t = S.token;
     if (t && window.google) { try { google.accounts.oauth2.revoke(t, () => {}); } catch (e) { /* ignorar */ } }
-    Object.assign(S, { token: null, sheetId: null, rows: [], reglas: [], cuentas: [], presup: [], pend: [] });
-    for (const id of ['resumen', 'movs', 'importar', 'contexto', 'tabs', 'pie']) $(id).hidden = true;
+    Object.assign(S, { token: null, sheetId: null, rows: [], reglas: [], cuentas: [], presup: [], prestamos: [], grupos: new Map(), grupoFilas: new Map(), pend: [] });
+    for (const id of [...TABS, 'contexto', 'tabs', 'pie']) $(id).hidden = true;
     $('welcome').hidden = false; $('connect').hidden = false; $('user').textContent = '';
     say(texto || '');
   }
@@ -254,13 +267,13 @@
 
   // ---------- Pestañas y contexto ----------
   function show(tab) {
-    for (const t of ['resumen', 'movs', 'importar']) $(t).hidden = t !== tab;
-    $('contexto').hidden = tab === 'importar';
+    for (const t of TABS) $(t).hidden = t !== tab;
+    $('contexto').hidden = tab === 'importar' || tab === 'nominas';
     document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
   }
   $('tabs').addEventListener('click', (e) => { if (e.target.dataset.tab) { show(e.target.dataset.tab); render(); } });
 
-  function render() { renderContexto(); renderResumen(); renderMovs(); renderLista(); renderCuentas(); }
+  function render() { renderContexto(); renderResumen(); renderPartidas(); renderNominas(); renderPrestamos(); renderMovs(); renderLista(); renderCuentas(); }
 
   function renderContexto() {
     const opciones = [...ambitos(), 'all'];
@@ -373,14 +386,18 @@
   $('mes').addEventListener('change', renderResumen);
   $('revisar').addEventListener('click', (e) => { e.preventDefault(); $('f-sin').checked = true; $('q').value = ''; $('f-mes').value = ''; show('movs'); renderMovs(); });
 
-  // ---------- Presupuestos ----------
+  // ---------- Partidas: grupo y presupuesto ----------
   let preCat = null;
   function abrirPresupuesto(cat) {
     preCat = cat;
     const b = presupuestoDe(cat);
-    $('pre-title').textContent = `${cat} · ${S.ambito}`;
+    $('pre-title').textContent = S.ambito === 'all' ? cat : `${cat} · ${S.ambito}`;
+    $('grupos-list').replaceChildren(...[...new Set([...C.GRUPOS_INICIALES.map((x) => x[1]), ...S.grupos.values()])].map((g) => el('option', { value: g })));
+    const g = C.grupoDe(cat, S.grupos);
+    $('pre-grupo').value = g === 'Otros' || g === C.SIN_CAT ? '' : g;
+    $('l-pre').hidden = S.ambito === 'all';
     $('pre-val').value = b ? b.mensual : '';
-    $('pre-quitar').hidden = !b;
+    $('pre-quitar').hidden = !b || S.ambito === 'all';
     $('dlg-pre').showModal();
   }
   $('pre-cancel').addEventListener('click', () => $('dlg-pre').close());
@@ -391,13 +408,19 @@
   }));
   $('pre-form').addEventListener('submit', (e) => {
     e.preventDefault();
-    const v = Number($('pre-val').value);
+    const v = Number($('pre-val').value), grupo = $('pre-grupo').value.trim();
     $('dlg-pre').close();
-    if (!(v > 0)) return;
     run(async () => {
-      const b = presupuestoDe(preCat);
-      if (b) await writeValues([{ range: `Presupuestos!C${b.fila}`, values: [[v]] }]);
-      else await append('Presupuestos!A:C', [[S.ambito, preCat, v]]);
+      if (grupo && grupo !== C.grupoDe(preCat, S.grupos)) {
+        const f = S.grupoFilas.get(preCat);
+        if (f) await writeValues([{ range: `Grupos!B${f.fila}`, values: [[grupo]] }]);
+        else await append('Grupos!A:B', [[preCat, grupo]]);
+      }
+      if (S.ambito !== 'all' && v > 0) {
+        const b = presupuestoDe(preCat);
+        if (b) await writeValues([{ range: `Presupuestos!C${b.fila}`, values: [[v]] }]);
+        else await append('Presupuestos!A:C', [[S.ambito, preCat, v]]);
+      }
       await load(); render();
     });
   });
@@ -427,43 +450,136 @@
   for (const id of ['q', 'f-cuenta', 'f-mes', 'f-sin']) $(id).addEventListener('input', () => { S.limite = 200; renderMovs(); });
   $('mas').addEventListener('click', () => { S.limite += 300; renderMovs(); });
 
-  // ---------- Editar categoría ----------
+  // ---------- Editar categoría / enlazar préstamo ----------
   let editando = null;
+  const toggleCat = () => { const l = !!$('d-prest').value; $('d-cat').disabled = l; $('d-cat').required = !l; $('l-cat').hidden = l; };
+  $('d-prest').addEventListener('change', toggleCat);
   function editar(r) {
     editando = r;
     $('dlg-title').textContent = C.titulo(r) + ' · ' + eur.format(r.importe);
-    $('d-cat').value = C.esAuto(r.categoria) || r.categoria === C.SIN_CAT ? '' : r.categoria;
+    $('d-cat').value = C.esAuto(r.categoria) || r.categoria === C.SIN_CAT || /^Préstamo · /.test(r.categoria) ? '' : r.categoria;
     $('d-pat').value = C.suggestPattern(r);
     $('d-tipo').value = 'auto';
     $('d-nota').value = r.nota || '';
     $('d-solo').checked = true; $('d-amb').textContent = ambitoDe(r.cuenta);
+    const ps = S.prestamos.filter((p) => !p.ambito || p.ambito === ambitoDe(r.cuenta) || p.id === r.prestamo);
+    $('d-prest').replaceChildren(el('option', { value: '' }, '(ninguno)'), ...ps.map((p) => el('option', { value: p.id }, `${p.persona} · ${p.concepto || (p.sentido === 'debo' ? 'me prestó' : 'le presto')}`)));
+    $('d-prest').value = r.prestamo || '';
+    toggleCat();
     $('cats-list').replaceChildren(...[...new Set([...S.rows.map((x) => x.categoria), ...S.reglas.map((x) => x.categoria)])].filter((c) => c !== C.SIN_CAT).sort().map((c) => el('option', { value: c })));
     $('dlg').showModal();
   }
   $('d-cancel').addEventListener('click', () => $('dlg').close());
   $('dlg-form').addEventListener('submit', (e) => {
     e.preventDefault();
-    const categoria = $('d-cat').value.trim(), patron = $('d-pat').value.trim(), tipoSel = $('d-tipo').value, nota = $('d-nota').value.trim();
+    const pid = $('d-prest').value, loan = S.prestamos.find((p) => p.id === pid);
+    const categoria = loan ? `Préstamo · ${loan.persona}` : $('d-cat').value.trim();
+    const patron = $('d-pat').value.trim(), tipoSel = loan ? 'neutro' : $('d-tipo').value, nota = $('d-nota').value.trim();
     const amb = $('d-solo').checked ? ambitoDe(editando.cuenta) : '';
     $('dlg').close();
     if (!categoria) return;
     run(async () => {
       const tipoDe = (r) => (tipoSel === 'auto' ? (r.importe < 0 ? 'gasto' : 'ingreso') : tipoSel);
       const cambios = new Map([[editando.fila, editando]]);
-      editando.categoria = categoria; editando.tipo = tipoDe(editando); editando.nota = nota;
+      editando.categoria = categoria; editando.tipo = tipoDe(editando); editando.nota = nota; editando.prestamo = pid;
       if (patron) {
         const pn = C.norm(patron);
         for (const r of S.rows) {
-          if (r.categoria === C.SIN_CAT && C.norm(r.concepto + ' ' + r.detalle).includes(pn) && (!amb || ambitoDe(r.cuenta) === amb)) {
-            r.categoria = categoria; r.tipo = tipoDe(r); cambios.set(r.fila, r);
+          const coincide = C.norm(r.concepto + ' ' + r.detalle).includes(pn) && (!amb || ambitoDe(r.cuenta) === amb);
+          if (!coincide || cambios.has(r.fila)) continue;
+          if (loan ? !r.prestamo : r.categoria === C.SIN_CAT) {
+            r.categoria = categoria; r.tipo = tipoDe(r); r.prestamo = pid; cambios.set(r.fila, r);
           }
         }
-        await append('Reglas!A:D', [[patron, categoria, tipoSel, amb]]);
-        S.reglas.push({ patron, categoria, tipo: tipoSel, ambito: amb });
+        if (!loan) {
+          await append('Reglas!A:D', [[patron, categoria, tipoSel, amb]]);
+          S.reglas.push({ patron, categoria, tipo: tipoSel, ambito: amb });
+        }
       }
-      await writeValues([...cambios.values()].map((r) => ({ range: `Movimientos!H${r.fila}:K${r.fila}`, values: [[r.categoria, r.tipo, r.pareja || '', r.nota || '']] })));
-      say(cambios.size > 1 ? `Actualizados ${cambios.size} movimientos y guardada la regla.` : 'Guardado.');
+      await writeValues([...cambios.values()].map((r) => ({ range: `Movimientos!H${r.fila}:L${r.fila}`, values: [[r.categoria, r.tipo, r.pareja || '', r.nota || '', r.prestamo || '']] })));
+      say(cambios.size > 1 ? `Actualizados ${cambios.size} movimientos${loan ? '' : ' y guardada la regla'}.` : 'Guardado.');
       render();
+    });
+  });
+
+  // ---------- Partidas ----------
+  const periodosDe = (vs) => { const m = [...new Set(vs.map((r) => String(r.fecha).slice(0, 7)))].sort().reverse(); return [...m, ...new Set(m.map((x) => x.slice(0, 4))), 'all']; };
+
+  function renderPartidas() {
+    const vs = vista(), opts = periodosDe(vs);
+    const sel = $('p-mes'), prev = sel.value;
+    sel.replaceChildren(...opts.map((p) => el('option', { value: p }, perLabel(p))));
+    sel.value = opts.includes(prev) ? prev : opts[0] || 'all';
+    const per = sel.value, conPre = /^\d{4}-\d{2}$/.test(per) && S.ambito !== 'all';
+    document.querySelectorAll('.p-pre').forEach((e) => { e.hidden = !conPre; });
+    $('p-ayuda').textContent = conPre ? 'Pulsa una partida para ponerle un presupuesto mensual o cambiarla de grupo.'
+      : S.ambito === 'all' ? 'Los presupuestos se ponen por ámbito (Empresa o Personal). Aquí puedes cambiar una partida de grupo.' : 'Elige un mes para ver los presupuestos.';
+    const grupos = C.partidas(vs, per, S.grupos);
+    if (conPre) {
+      for (const b of S.presup.filter((x) => x.ambito === S.ambito)) {
+        const g = C.grupoDe(b.categoria, S.grupos);
+        let o = grupos.find((x) => x.grupo === g);
+        if (!o) { o = { grupo: g, total: 0, categorias: [] }; grupos.push(o); }
+        if (!o.categorias.some((c) => c.categoria === b.categoria)) o.categorias.push({ categoria: b.categoria, total: 0 });
+      }
+    }
+    const filas = [];
+    for (const g of grupos) {
+      const preG = conPre ? g.categorias.reduce((a, c) => a + ((presupuestoDe(c.categoria) || {}).mensual || 0), 0) : 0;
+      filas.push(el('tr', { class: 'grupo' }, el('td', {}, g.grupo), el('td', { class: 'n' }, eur.format(g.total)), conPre ? el('td', { class: 'n' }, preG ? eur.format(preG) : '') : null, conPre ? el('td', {}) : null));
+      for (const c of g.categorias) {
+        const b = conPre ? presupuestoDe(c.categoria) : null, pct = b ? Math.round((c.total / b.mensual) * 100) : null;
+        filas.push(el('tr', {},
+          el('td', {}, el('button', { class: 'pill', onclick: () => abrirPresupuesto(c.categoria) }, c.categoria)),
+          el('td', { class: 'n' }, eur.format(c.total)),
+          conPre ? el('td', { class: 'n' }, b ? eur.format(b.mensual) : '—') : null,
+          conPre ? el('td', {}, b ? el('div', {}, el('div', { class: 't' + (pct > 100 ? ' over' : '') }, bar(Math.min(100, pct))), el('small', { class: 'sub' }, pct + '%')) : '') : null));
+      }
+    }
+    $('tpart').tBodies[0].replaceChildren(...(filas.length ? filas : [el('tr', {}, el('td', { colspan: 4 }, 'Sin gastos en este periodo.'))]));
+  }
+  $('p-mes').addEventListener('change', renderPartidas);
+
+  // ---------- Nóminas ----------
+  const ESTADOS_NOMINA = {
+    ok: ['Cobrada y traspasada', 'ok'], 'falta-traspaso': ['Falta traspasar', 'warn'],
+    'traspasada-sin-extracto': ['Traspasada (cobro anterior a tus extractos)', ''], 'traspasada-sin-cobro': ['Traspasada, cobro no registrado', 'warn'],
+    'pendiente-cobro': ['Pendiente de cobro', 'bad'], 'sin-datos': ['Sin extracto', ''],
+  };
+  function renderNominas() {
+    const n = C.nominas(S.rows, new Date().toISOString().slice(0, 10));
+    $('n-cob').replaceChildren(money(n.cobrado)); $('n-tra').replaceChildren(money(n.traspasado)); $('n-ret').replaceChildren(money(n.retenido));
+    $('n-pen').textContent = n.porTraspasar ? n.porTraspasar + (n.porTraspasar > 1 ? ' meses' : ' mes') : 'Al día';
+    const celda = (x) => (x ? el('td', {}, eur.format(x.importe), el('div', { class: 'sub' }, fdate(x.fecha))) : el('td', {}, '—'));
+    $('tnom').tBodies[0].replaceChildren(...(n.filas.length ? n.filas.map((f) => {
+      const [txt, cls] = ESTADOS_NOMINA[f.estado];
+      return el('tr', {}, el('td', {}, mesLabel(f.mes)), celda(f.cobro), celda(f.traspaso), el('td', { class: 'n' }, f.retenido == null ? '—' : eur.format(f.retenido)), el('td', {}, el('span', { class: 'badge ' + cls }, txt)));
+    }) : [el('tr', {}, el('td', { colspan: 5 }, 'Aún no hay nóminas en tus movimientos.'))]));
+  }
+
+  // ---------- Préstamos ----------
+  const kpi = (t, n) => el('div', {}, el('small', {}, t), el('b', {}, eur.format(n)));
+  function renderPrestamos() {
+    const ps = S.prestamos.filter((p) => S.ambito === 'all' || p.ambito === S.ambito);
+    $('lista-prest').replaceChildren(...(ps.length ? ps.map((p) => {
+      const e = C.estadoPrestamo(p, S.rows);
+      return el('div', { class: 'prest' },
+        el('h3', {}, `${p.persona} · ${p.sentido === 'debo' ? 'me prestó' : 'le presto'} `, el('span', { class: 'badge ' + (e.estado === 'Pagado' ? 'ok' : 'warn') }, e.estado)),
+        el('div', { class: 'sub' }, [p.concepto, p.ambito].filter(Boolean).join(' · ')),
+        el('div', { class: 'kpis' }, kpi('Prestado', e.prestado), kpi('Devuelto', e.devuelto), kpi('Pendiente', e.pendiente)),
+        e.movimientos.length
+          ? el('table', {}, el('tbody', {}, ...e.movimientos.map((r) => el('tr', {}, el('td', {}, fdate(r.fecha)), el('td', {}, nombreCuenta(r.cuenta)), el('td', {}, C.titulo(r)), el('td', { class: 'n' }, money(r.importe, true))))))
+          : el('p', { class: 'sub' }, 'Sin movimientos enlazados todavía.'),
+        !e.movimientos.length ? el('button', { onclick: () => run(async () => { await writeValues([{ range: `Prestamos!A${p.fila}:G${p.fila}`, values: [['', '', '', '', '', '', '']] }]); await load(); render(); }) }, 'Eliminar') : null);
+    }) : [el('p', { class: 'sub' }, 'Aún no hay préstamos en este ámbito.')]));
+  }
+  $('nprest').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const persona = $('np-persona').value.trim(), sentido = $('np-sentido').value, concepto = $('np-concepto').value.trim(), ini = $('np-inicial').value;
+    if (!persona) return;
+    run(async () => {
+      await append('Prestamos!A:G', [['p' + Date.now().toString(36), persona, sentido, concepto, ini === '' ? '' : Number(ini), S.ambito === 'all' ? ambitos()[0] : S.ambito, new Date().toISOString().slice(0, 10)]]);
+      await load(); $('nprest').reset(); say('Préstamo creado. Enlaza sus pagos desde Movimientos.'); render();
     });
   });
 
@@ -528,7 +644,7 @@
     }
     añadidos.sort((a, b) => a.fecha.localeCompare(b.fecha));
     if (añadidos.length) {
-      await append('Movimientos!A:K', añadidos.map(C.toRow));
+      await append('Movimientos!A:L', añadidos.map(C.toRow));
       await load();
       await reconciliar();
     }

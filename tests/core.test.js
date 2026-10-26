@@ -61,3 +61,37 @@ test('detecta gasto fijo en 3 meses', () => {
   const r = C.recurrentes([mk('2026-08-01'), mk('2026-09-01'), mk('2026-10-01')]);
   assert.equal(r.length, 1); assert.equal(r[0].nombre, 'Suno inc.');
 });
+
+test('mes de la nómina según el concepto', () => {
+  assert.equal(C.mesNomina('Nomina juny 2026', '2026-07-04'), '2026-06');
+  assert.equal(C.mesNomina('Nomina agost', '2026-09-21'), '2026-08');
+  assert.equal(C.mesNomina('Nomina desembre', '2026-01-04'), '2025-12');
+});
+
+test('nómina cobrada y traspasada, y la que falta traspasar', () => {
+  const f = (o) => ({ id: o.id, fecha: o.fecha, cuenta: o.cuenta, concepto: o.c, detalle: '', importe: o.i, tipo: o.t, categoria: 'x', pareja: o.p || '' });
+  const rows = [
+    f({ id: '1', fecha: '2026-07-31', cuenta: 'cuenta_b', c: 'Nomina h9mw juliol 2026', i: 2800, t: 'ingreso' }),
+    f({ id: '2', fecha: '2026-08-03', cuenta: 'cuenta_b', c: 'Nomina juliol 2026', i: -2400, t: 'traspaso', p: '3' }),
+    f({ id: '3', fecha: '2026-08-03', cuenta: 'cuenta_a', c: 'Nomina juliol 2026', i: 2400, t: 'traspaso', p: '2' }),
+    f({ id: '4', fecha: '2026-10-09', cuenta: 'cuenta_b', c: 'Nomina h9mw setembre 2026', i: 2800, t: 'ingreso' }),
+  ];
+  const n = C.nominas(rows, '2026-10-26');
+  const by = Object.fromEntries(n.filas.map((x) => [x.mes, x]));
+  assert.equal(by['2026-07'].estado, 'ok'); assert.equal(by['2026-07'].retenido, 400);
+  assert.equal(by['2026-09'].estado, 'falta-traspaso'); assert.equal(by['2026-08'].estado, 'pendiente-cobro');
+  assert.equal(n.traspasado, 2400); // el traspaso no se cuenta dos veces
+});
+
+test('préstamo: pendiente y pagado', () => {
+  const p = { id: 'p1', sentido: 'presto', inicial: 0 };
+  const rows = [{ prestamo: 'p1', importe: -1000, fecha: '2026-01-01' }, { prestamo: 'p1', importe: 400, fecha: '2026-02-01' }];
+  let e = C.estadoPrestamo(p, rows); assert.equal(e.pendiente, 600); assert.equal(e.estado, 'Pendiente');
+  e = C.estadoPrestamo(p, [...rows, { prestamo: 'p1', importe: 600, fecha: '2026-03-01' }]); assert.equal(e.estado, 'Pagado');
+});
+
+test('partidas agrupa por grupo', () => {
+  const rows = [{ fecha: '2026-10-01', tipo: 'gasto', categoria: 'Hipoteca', importe: -1500 }, { fecha: '2026-10-02', tipo: 'gasto', categoria: 'Supermercado', importe: -200 }, { fecha: '2026-10-03', tipo: 'gasto', categoria: 'Ocio', importe: -50 }];
+  const g = C.partidas(rows, '2026-10', new Map(C.GRUPOS_INICIALES));
+  assert.equal(g[0].grupo, 'Casa'); assert.equal(g[0].total, 1700);
+});

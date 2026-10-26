@@ -13,6 +13,9 @@
   <h1>Mis cuentas</h1>
   <nav id="tabs" hidden>
     <button data-tab="resumen" class="on">Resumen</button>
+    <button data-tab="partidas">Partidas</button>
+    <button data-tab="nominas">Nóminas</button>
+    <button data-tab="prestamos">Préstamos</button>
     <button data-tab="movs">Movimientos</button>
     <button data-tab="importar">Importar</button>
   </nav>
@@ -71,6 +74,36 @@
     <table id="meses"><thead><tr><th>Mes</th><th class="n">Ingresos</th><th class="n">Gastos</th><th class="n">Neto</th></tr></thead><tbody></tbody></table>
   </section>
 
+  <section id="partidas" hidden>
+    <div class="bar"><select id="p-mes" aria-label="Periodo"></select></div>
+    <p id="p-ayuda" class="sub"></p>
+    <table id="tpart"><thead><tr><th>Partida</th><th class="n">Gastado</th><th class="n p-pre">Presupuesto</th><th class="p-pre">Uso</th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <section id="nominas" hidden>
+    <div class="kpis">
+      <div><small>Cobrado</small><b id="n-cob"></b></div>
+      <div><small>Traspasado a personal</small><b id="n-tra"></b></div>
+      <div><small>Retenido en la empresa</small><b id="n-ret"></b></div>
+      <div><small>Por traspasar</small><b id="n-pen"></b></div>
+    </div>
+    <p class="sub">Cada mes se mira la nómina de H9MW que entra en la cuenta de empresa y el traspaso a tu cuenta personal. El mes es el del concepto, no el de la fecha del banco.</p>
+    <table id="tnom"><thead><tr><th>Mes</th><th>Cobrada</th><th>Traspasada</th><th class="n">Se queda</th><th>Estado</th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <section id="prestamos" hidden>
+    <div id="lista-prest"></div>
+    <h2>Nuevo préstamo</h2>
+    <form id="nprest" class="nueva">
+      <input id="np-persona" placeholder="Persona (Eloi…)" required>
+      <select id="np-sentido"><option value="presto">Le presto</option><option value="debo">Me prestan</option></select>
+      <input id="np-concepto" placeholder="Concepto">
+      <input id="np-inicial" type="number" step="0.01" min="0" placeholder="Importe inicial (solo si no está en tus cuentas)">
+      <button>Crear</button>
+    </form>
+    <p class="sub">Después, en <b>Movimientos</b>, pulsa la categoría de cada pago y elígelo en «Préstamo». Lo prestado y lo devuelto se calculan solos y esos movimientos dejan de contar como gasto o ingreso.</p>
+  </section>
+
   <section id="movs" hidden>
     <div class="bar">
       <input id="q" type="search" placeholder="Buscar…" aria-label="Buscar">
@@ -111,7 +144,8 @@
 <dialog id="dlg">
   <form id="dlg-form">
     <h3 id="dlg-title"></h3>
-    <label>Categoría <input id="d-cat" list="cats-list" required></label>
+    <label>Préstamo <select id="d-prest"></select></label>
+    <label id="l-cat">Categoría <input id="d-cat" list="cats-list" required></label>
     <datalist id="cats-list"></datalist>
     <label>Aplicar también a movimientos que contengan
       <input id="d-pat" placeholder="(vacío = solo este movimiento)"></label>
@@ -132,7 +166,9 @@
 <dialog id="dlg-pre">
   <form id="pre-form">
     <h3 id="pre-title"></h3>
-    <label>Presupuesto mensual (€) <input id="pre-val" type="number" min="0" step="1" inputmode="decimal"></label>
+    <label>Grupo <input id="pre-grupo" list="grupos-list" placeholder="Casa, Ocio, Proveedores…"></label>
+    <datalist id="grupos-list"></datalist>
+    <label id="l-pre">Presupuesto mensual (€) <input id="pre-val" type="number" min="0" step="1" inputmode="decimal"></label>
     <div class="row"><button type="button" id="pre-quitar">Quitar</button><button type="button" id="pre-cancel">Cancelar</button><button id="pre-ok">Guardar</button></div>
   </form>
 </dialog>
