@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; connect-src 'self' https://*.googleapis.com https://accounts.google.com/gsi/; frame-src https://accounts.google.com/gsi/; style-src 'self' https://accounts.google.com/gsi/style; img-src 'self' data:; base-uri 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Mis cuentas</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Mis cuentas</h1>
+  <nav id="tabs" hidden>
+    <button data-tab="resumen" class="on">Resumen</button>
+    <button data-tab="movs">Movimientos</button>
+    <button data-tab="importar">Importar</button>
+  </nav>
+  <span id="user"></span>
+  <button id="connect">Conectar con Google</button>
+</header>
+
+<p id="msg" role="status" hidden></p>
+
+<main>
+  <section id="welcome">
+    <p>Tus datos viven en una hoja de tu Google Drive. Esta página solo es el programa: los extractos se procesan en tu navegador.</p>
+  </section>
+
+  <section id="resumen" hidden>
+    <div class="bar">
+      <select id="mes" aria-label="Mes"></select>
+      <a href="#" id="revisar" hidden></a>
+    </div>
+    <div class="kpis">
+      <div><small>Ingresos</small><b id="k-ing"></b></div>
+      <div><small>Gastos</small><b id="k-gas"></b></div>
+      <div><small>Neto</small><b id="k-net"></b></div>
+    </div>
+    <h2>Gastos por categoría</h2>
+    <div id="cats-gasto" class="cats"></div>
+    <h2>Ingresos</h2>
+    <div id="cats-ingreso" class="cats"></div>
+    <h2>Últimos meses</h2>
+    <table id="meses"><thead><tr><th>Mes</th><th class="n">Ingresos</th><th class="n">Gastos</th><th class="n">Neto</th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <section id="movs" hidden>
+    <div class="bar">
+      <input id="q" type="search" placeholder="Buscar…" aria-label="Buscar">
+      <select id="f-cuenta" aria-label="Cuenta"></select>
+      <select id="f-mes" aria-label="Mes"></select>
+      <label><input type="checkbox" id="f-sin"> Solo sin categoría</label>
+    </div>
+    <div class="scroll">
+      <table id="tabla"><thead><tr><th>Fecha</th><th>Cuenta</th><th>Concepto</th><th class="n">Importe</th><th>Categoría</th></tr></thead><tbody></tbody></table>
+    </div>
+    <button id="mas" hidden>Mostrar más</button>
+  </section>
+
+  <section id="importar" hidden>
+    <label class="drop" id="drop">
+      <input type="file" id="files" multiple accept=".xlsx,.xls,.csv">
+      <span>Elige los ficheros de BBVA (cuentas y tarjeta). Puedes subir varios a la vez.</span>
+    </label>
+    <div id="lista"></div>
+    <button id="go" hidden>Importar</button>
+  </section>
+</main>
+
+<dialog id="dlg">
+  <form method="dialog" id="dlg-form">
+    <h3 id="dlg-title"></h3>
+    <label>Categoría <input id="d-cat" list="cats-list" required></label>
+    <datalist id="cats-list"></datalist>
+    <label>Aplicar también a movimientos que contengan
+      <input id="d-pat" placeholder="(vacío = solo este movimiento)"></label>
+    <label>Tipo
+      <select id="d-tipo">
+        <option value="auto">Automático (según signo)</option>
+        <option value="gasto">Gasto</option>
+        <option value="ingreso">Ingreso</option>
+        <option value="neutro">No computa</option>
+      </select></label>
+    <div class="row"><button value="cancel" type="button" id="d-cancel">Cancelar</button><button id="d-ok" value="ok">Guardar</button></div>
+  </form>
+</dialog>
+
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="vendor/xlsx.full.min.js"></script>
+<script src="config.js"></script>
+<script src="core.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
